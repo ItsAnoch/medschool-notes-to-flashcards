@@ -1,78 +1,123 @@
 "use client";
 
-import { useState, FormEvent } from "react";
+import React from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Toaster, toast } from "sonner";
+
+/**
+ * Zod schema – we use `z.custom` instead of `z.instanceof(File | FileList)`
+ * so the validator only touches the `File` constructor **in the browser**.
+ * This avoids `ReferenceError: FileList is not defined` during server‑side bundling.
+ */
+const formSchema = z.object({
+  file: z
+    .custom<File>(
+      (v) => v instanceof File && v.type === "application/pdf" && v.size > 0,
+      "Please choose a PDF file",
+    )
+    .nullable(),
+});
+
+type FormValues = z.infer<typeof formSchema>;
 
 export default function Home() {
-  const [file, setFile] = useState<File | null>(null);
-  const [busy, setBusy] = useState(false);
+  const {
+    register,
+    handleSubmit,
+    watch,
+    reset,
+    formState: { errors, isSubmitting },
+  } = useForm<FormValues>({
+    resolver: zodResolver(formSchema),
+    defaultValues: { file: null },
+  });
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (!file) return alert("Please choose a PDF first");
+  const selectedFile = watch("file");
 
+  async function onSubmit({ file }: FormValues) {
+    if (!file) return; // type‑guard: already validated but TS needs it
+
+    const toastId = toast.loading("Generating flashcards…");
     try {
-      setBusy(true);
+      const fd = new FormData();
+      fd.append("file", file, file.name);
 
-      // Build multipart/form‑data
-      const data = new FormData();
-      data.append("file", file, file.name);
+      const res = await fetch("/api/flashcards", { method: "POST", body: fd });
+      if (!res.ok) throw new Error(await res.text());
 
-      // POST to your API
-      const res = await fetch("/api/flashcards", {
-        method: "POST",
-        body: data,
-      });
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(`Server responded ${res.status}: ${errorText}`);
-      }
-
-      // Response should be CSV
-      const blob = await res.blob();               // `text/csv` blob
+      const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-
-      // Create an invisible <a> and click it
       const a = document.createElement("a");
       a.href = url;
       a.download = "flashcards.csv";
-      a.style.display = "none";
-      document.body.appendChild(a);
       a.click();
-      document.body.removeChild(a);
-
-      // Release the blob URL once the download has started
       URL.revokeObjectURL(url);
-    } catch (err) {
+
+      toast.success("Flashcards downloaded!", { id: toastId });
+      reset();
+    } catch (err: any) {
       console.error(err);
-      alert("Something went wrong generating flash cards. Check console.");
-    } finally {
-      setBusy(false);
+      toast.error(`Error: ${err.message ?? "Something went wrong"}`, { id: toastId });
     }
   }
 
   return (
-    <main className="p-8 space-y-4">
-      <form onSubmit={handleSubmit} className="space-x-2">
-        <input
-          type="file"
-          accept="application/pdf"
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          disabled={busy}
-        />
-        <button
-          type="submit"
-          disabled={!file || busy}
-          className="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50"
-        >
-          {busy ? "Generating…" : "Submit"}
-        </button>
-      </form>
-      {file && (
-        <p className="text-sm text-gray-600">
-          Selected file: <strong>{file.name}</strong> ({(file.size / 1024 / 1024).toFixed(2)} MB)
-        </p>
-      )}
-    </main>
+    <>
+      {/* Sonner toaster mounted once */}
+      <Toaster richColors position="top-right" />
+
+      <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-950 to-slate-900 p-4">
+        <Card className="w-full max-w-md shadow-xl">
+          <CardHeader>
+            <CardTitle className="text-center text-2xl font-semibold">
+              Ahrani's Beautiful Notes&nbsp;AI
+            </CardTitle>
+          </CardHeader>
+
+          <form onSubmit={handleSubmit(onSubmit)}>
+            <CardContent className="space-y-4">
+              <div className="grid gap-1">
+                <Label htmlFor="file">Choose a PDF</Label>
+                <Input
+                  id="file"
+                  type="file"
+                  accept="application/pdf"
+                  {...register("file", { required: true })}
+                />
+                {errors.file && (
+                  <p className="text-sm text-red-500 font-medium">
+                    {errors.file.message}
+                  </p>
+                )}
+              </div>
+
+              {selectedFile && (
+                <p className="text-sm text-muted-foreground">
+                  Selected: <strong>{selectedFile.name}</strong> ( {(selectedFile.size / 1024 / 1024).toFixed(2)} MB )
+                </p>
+              )}
+            </CardContent>
+
+            <CardFooter className="justify-end">
+              <Button type="submit" disabled={isSubmitting} className="w-full">
+                {isSubmitting ? "Generating…" : "Generate Flashcards"}
+              </Button>
+            </CardFooter>
+          </form>
+        </Card>
+      </main>
+    </>
   );
 }
